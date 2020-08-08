@@ -1,16 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
-
 #ifndef __LINUX_MSM_CAM_SENSOR_H
 #define __LINUX_MSM_CAM_SENSOR_H
 
@@ -39,6 +26,21 @@ struct msm_sensor_power_setting_array32 {
 	uint16_t size_down;
 };
 
+struct msm_camera_i2c_reg_setting32 {
+	compat_uptr_t reg_setting;
+	uint16_t size;
+	enum msm_camera_i2c_reg_addr_type addr_type;
+	enum msm_camera_i2c_data_type data_type;
+	uint16_t delay;
+};
+
+struct msm_sensor_id_info_t32 {
+	unsigned short sensor_id_reg_addr;
+	unsigned short sensor_id;
+	unsigned short sensor_id_mask;
+	struct msm_camera_i2c_reg_setting32 setting;
+};
+
 struct msm_camera_sensor_slave_info32 {
 	char sensor_name[32];
 	char eeprom_name[32];
@@ -49,7 +51,8 @@ struct msm_camera_sensor_slave_info32 {
 	uint16_t slave_addr;
 	enum i2c_freq_mode_t i2c_freq_mode;
 	enum msm_camera_i2c_reg_addr_type addr_type;
-	struct msm_sensor_id_info_t sensor_id_info;
+	struct msm_sensor_id_info_t32 sensor_id_info;
+	struct msm_vendor_id_info_t vendor_id_info;
 	struct msm_sensor_power_setting_array32 power_setting_array;
 	uint8_t  is_init_params_valid;
 	struct msm_sensor_init_params sensor_init_params;
@@ -122,11 +125,6 @@ struct msm_eeprom_info_t32 {
 	compat_uptr_t mem_map_array;
 };
 
-struct msm_eeprom_identy_t32 {
-	char eeprom_name[MAX_SENSOR_NAME];
-	uint32_t vendor_id;
-};
-
 struct msm_eeprom_cfg_data32 {
 	enum eeprom_cfg_type_t cfgtype;
 	uint8_t is_supported;
@@ -136,7 +134,6 @@ struct msm_eeprom_cfg_data32 {
 		struct eeprom_read_t32 read_data;
 		struct eeprom_write_t32 write_data;
 		struct msm_eeprom_info_t32 eeprom_info;
-		struct msm_eeprom_identy_t32 identier;
 	} cfg;
 };
 
@@ -144,14 +141,6 @@ struct msm_camera_i2c_seq_reg_setting32 {
 	compat_uptr_t reg_setting;
 	uint16_t size;
 	enum msm_camera_i2c_reg_addr_type addr_type;
-	uint16_t delay;
-};
-
-struct msm_camera_i2c_reg_setting32 {
-	compat_uptr_t reg_setting;
-	uint16_t size;
-	enum msm_camera_i2c_reg_addr_type addr_type;
-	enum msm_camera_i2c_data_type data_type;
 	uint16_t delay;
 };
 
