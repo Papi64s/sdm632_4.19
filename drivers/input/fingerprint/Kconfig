@@ -1,17 +1,19 @@
 #
-# Fingerprint driver configuration
+# Fingerprint device configuration
 #
-menuconfig INPUT_FINGERPRINT
-	bool "Fingerprints"
+
+menu "Fingerprint device support"
+
+config FINGERPRINT_FPC1020
+	tristate "fpc fpc1020 fingerprint driver support"
 	help
-	  Say Y here, and a list of supported fingerprints will be displayed.
-	  This option doesn't affect the kernel.
+	  Say Y here if you have fpc2010 fingerprint device
 
-	  If unsure, say Y.
+config GOODIX_FINGERPRINT
+	tristate "goodix fingerprint driver support"
+	default y
+	help
+	  Say Y here if you have goodix fingerprint devices
 
-if INPUT_FINGERPRINT
+endmenu
 
-source "drivers/input/fingerprint/goodix_ta/Kconfig"
-source "drivers/input/fingerprint/fpc_tee/Kconfig"
-
-endif
