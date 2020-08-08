@@ -1,5 +1,15 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (c) 2012, 2017-2018, 2020, The Linux Foundation. All rights reserved. */
+/* Copyright (c) 2012, 2017-2018, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2020 XiaoMi, Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
 
 #ifndef __MDSS_IO_UTIL_H__
 #define __MDSS_IO_UTIL_H__
@@ -52,14 +62,10 @@ struct mdss_vreg {
 	int min_voltage;
 	int max_voltage;
 	u32 load[DSS_REG_MODE_MAX];
-	int enable_load;
-	int disable_load;
 	int pre_on_sleep;
 	int post_on_sleep;
 	int pre_off_sleep;
 	int post_off_sleep;
-	bool lp_disable_allowed;
-	bool disabled;
 };
 
 struct mdss_gpio {
@@ -109,9 +115,10 @@ void msm_mdss_put_clk(struct mdss_clk *clk_arry, int num_clk);
 int msm_mdss_clk_set_rate(struct mdss_clk *clk_arry, int num_clk);
 int msm_mdss_enable_clk(struct mdss_clk *clk_arry, int num_clk, int enable);
 
-int dss_i2c_byte_read(struct i2c_client *client, uint8_t slave_addr,
+int mdss_i2c_byte_read(struct i2c_client *client, uint8_t slave_addr,
 		       uint8_t reg_offset, uint8_t *read_buf);
-int dss_i2c_byte_write(struct i2c_client *client, uint8_t slave_addr,
+int mdss_i2c_byte_write(struct i2c_client *client, uint8_t slave_addr,
 			uint8_t reg_offset, uint8_t *value);
+int mdss_prim_panel_fb_unblank(int timeout);
 
 #endif /* __MDSS_IO_UTIL_H__ */

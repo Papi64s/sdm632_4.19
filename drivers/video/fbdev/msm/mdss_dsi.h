@@ -1,6 +1,16 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (c) 2012-2021, The Linux Foundation. All rights reserved. */
-/* Copyright (C) 2017 XiaoMi, Inc. */
+/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2020 XiaoMi, Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ */
 
 #ifndef MDSS_DSI_H
 #define MDSS_DSI_H
@@ -10,9 +20,6 @@
 #include <linux/irqreturn.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/gpio.h>
-#ifdef CONFIG_BACKLIGHT_QCOM_SPMI_WLED
-#include <linux/backlight.h>
-#endif
 
 #include "mdss_panel.h"
 #include "mdss_dsi_cmd.h"
@@ -51,13 +58,12 @@
 #define MDSS_DSI_HW_REV_104             0x10040000      /* 8996   */
 #define MDSS_DSI_HW_REV_104_1           0x10040001      /* 8996   */
 #define MDSS_DSI_HW_REV_104_2           0x10040002      /* 8937   */
-#define MDSS_DSI_HW_REV_200		0x20000000	/* 8998 */
-#define MDSS_DSI_HW_REV_201		0x20010000	/* 660 */
-
+#define MDSS_DSI_HW_REV_201		20010000	/* 660 */
 #define MDSS_DSI_HW_REV_STEP_0		0x0
 #define MDSS_DSI_HW_REV_STEP_1		0x1
 #define MDSS_DSI_HW_REV_STEP_2		0x2
 
+#define MDSS_STATUS_TE_WAIT_MAX		3
 #define NONE_PANEL "none"
 
 enum {		/* mipi dsi panel */
@@ -120,22 +126,6 @@ enum dsi_lane_map_type {
 	DSI_LANE_MAP_1032,
 	DSI_LANE_MAP_2103,
 	DSI_LANE_MAP_3210,
-};
-
-enum dsi_logical_lane_id {
-	DSI_LOGICAL_LANE_0 = 0,
-	DSI_LOGICAL_LANE_1,
-	DSI_LOGICAL_LANE_2,
-	DSI_LOGICAL_LANE_3,
-	DSI_LOGICAL_LANE_MAX,
-};
-
-enum dsi_physical_lane_id {
-	DSI_PHYSICAL_LANE_INVALID = 0,
-	DSI_PHYSICAL_LANE_0 = BIT(0),
-	DSI_PHYSICAL_LANE_1 = BIT(1),
-	DSI_PHYSICAL_LANE_2 = BIT(2),
-	DSI_PHYSICAL_LANE_3 = BIT(3),
 };
 
 enum dsi_pm_type {
@@ -260,13 +250,15 @@ struct dsi_shared_data {
 	u32 ulps_clamp_ctrl_off;
 	u32 ulps_phyrst_ctrl_off;
 
+	/* DSI phy skip clamp */
+	bool skip_clamp;
+
 	bool cmd_clk_ln_recovery_en;
 	bool dsi0_active;
 	bool dsi1_active;
 
 	/* DSI bus clocks */
 	struct clk *mdp_core_clk;
-	struct clk *mnoc_clk;
 	struct clk *ahb_clk;
 	struct clk *axi_clk;
 	struct clk *mmss_misc_ahb_clk;
@@ -362,7 +354,7 @@ struct dsi_panel_timing {
 
 struct dsi_kickoff_action {
 	struct list_head act_entry;
-	void (*action)(void *p);
+	void (*action)(void *);
 	void *data;
 };
 
@@ -414,7 +406,6 @@ struct mdss_dsi_ctrl_pdata {
 	int (*on)(struct mdss_panel_data *pdata);
 	int (*post_panel_on)(struct mdss_panel_data *pdata);
 	int (*off)(struct mdss_panel_data *pdata);
-	int (*dispparam_fnc) (struct mdss_panel_data *pdata);
 	int (*low_power_config)(struct mdss_panel_data *pdata, int enable);
 	int (*set_col_page_addr)(struct mdss_panel_data *pdata, bool force);
 	int (*check_status)(struct mdss_dsi_ctrl_pdata *pdata);
@@ -422,7 +413,7 @@ struct mdss_dsi_ctrl_pdata {
 	int (*cmdlist_commit)(struct mdss_dsi_ctrl_pdata *ctrl, int from_mdp);
 	void (*switch_mode)(struct mdss_panel_data *pdata, int mode);
 	struct mdss_panel_data panel_data;
-	unsigned char *ctrl_base;
+	unsigned char __iomem *ctrl_base;
 	struct mdss_io_data ctrl_io;
 	struct mdss_io_data mmss_misc_io;
 	struct mdss_io_data phy_io;
@@ -441,7 +432,6 @@ struct mdss_dsi_ctrl_pdata {
 	struct clk *byte_clk_rcg;
 	struct clk *pixel_clk_rcg;
 	struct clk *vco_dummy_clk;
-	struct clk *byte_intf_clk;
 	u8 ctrl_state;
 	int panel_mode;
 	int irq_cnt;
@@ -449,14 +439,13 @@ struct mdss_dsi_ctrl_pdata {
 	int rst_gpio;
 	int disp_en_gpio;
 	int bklt_en_gpio;
+	int vdd_ext_gpio;
+	int mode_gpio;
+	int intf_mux_gpio;
 	bool bklt_en_gpio_invert;
-	bool bklt_en_gpio_state;
-	int avdd_en_gpio;
-	bool avdd_en_gpio_invert;
 	int lcd_mode_sel_gpio;
 	int bklt_ctrl;	/* backlight ctrl */
 	enum dsi_ctrl_op_mode bklt_dcs_op_mode; /* backlight dcs ctrl mode */
-	u32 bklt_level;
 	bool pwm_pmi;
 	int pwm_period;
 	int pwm_pmic_gpio;
@@ -469,21 +458,17 @@ struct mdss_dsi_ctrl_pdata {
 	bool dsi_irq_line;
 	bool dcs_cmd_insert;
 	atomic_t te_irq_ready;
+	bool idle;
 
 	bool cmd_sync_wait_broadcast;
 	bool cmd_sync_wait_trigger;
 
 	struct mdss_rect roi;
-	struct mdss_dsi_dual_pu_roi dual_roi;
 	struct pwm_device *pwm_bl;
-#ifdef CONFIG_BACKLIGHT_QCOM_SPMI_WLED
-	struct backlight_device *raw_bd;
-#endif
 	u32 pclk_rate;
 	u32 byte_clk_rate;
 	u32 pclk_rate_bkp;
 	u32 byte_clk_rate_bkp;
-	u32 esc_clk_rate_hz;
 	bool refresh_clk_rate; /* flag to recalculate clk_rate */
 	struct mdss_module_power panel_power_data;
 	struct mdss_module_power power_data[DSI_MAX_PM]; /* for 8x10 */
@@ -491,7 +476,6 @@ struct mdss_dsi_ctrl_pdata {
 	struct mdss_hw *dsi_hw;
 	struct mdss_intf_recovery *recovery;
 	struct mdss_intf_recovery *mdp_callback;
-	struct mdss_intf_ulp_clamp *clamp_handler;
 
 	struct dsi_panel_cmds on_cmds;
 	struct dsi_panel_cmds post_dms_on_cmds;
@@ -500,61 +484,20 @@ struct mdss_dsi_ctrl_pdata {
 	struct dsi_panel_cmds lp_on_cmds;
 	struct dsi_panel_cmds lp_off_cmds;
 	struct dsi_panel_cmds status_cmds;
-
-	struct dsi_panel_cmds dispparam_cmds;
-	struct dsi_panel_cmds dispparam_cabcon_cmds;
-	struct dsi_panel_cmds dispparam_cabcguion_cmds;
-	struct dsi_panel_cmds dispparam_cabcstillon_cmds;
-	struct dsi_panel_cmds dispparam_cabcmovieon_cmds;
-	struct dsi_panel_cmds dispparam_cabcoff_cmds;
-	struct dsi_panel_cmds dispparam_ceon_cmds;
-	struct dsi_panel_cmds dispparam_ceoff_cmds;
-	struct dsi_panel_cmds dispparam_gammareload_cmds;
-	struct dsi_panel_cmds dispparam_warm_cmds;
-	struct dsi_panel_cmds dispparam_default_cmds;
-	struct dsi_panel_cmds dispparam_cold_cmds;
-	struct dsi_panel_cmds dispparam_papermode_cmds;
-	struct dsi_panel_cmds dispparam_papermode1_cmds;
-	struct dsi_panel_cmds dispparam_papermode2_cmds;
-	struct dsi_panel_cmds dispparam_papermode3_cmds;
-	struct dsi_panel_cmds dispparam_papermode4_cmds;
-	struct dsi_panel_cmds dispparam_papermode5_cmds;
-	struct dsi_panel_cmds dispparam_papermode6_cmds;
-	struct dsi_panel_cmds dispparam_papermode7_cmds;
-	struct dsi_panel_cmds dispparam_idleon_cmds;
-	struct dsi_panel_cmds dispparam_idleoff_cmds;
-	struct dsi_panel_cmds dispparam_test_cmds;
-
-	struct dsi_panel_cmds dispparam_scon_cmds;
-	struct dsi_panel_cmds dispparam_sreon_cmds;
-	struct dsi_panel_cmds dispparam_sreoff_cmds;
-	struct dsi_panel_cmds dispparam_vividweak_cmds;
-	struct dsi_panel_cmds dispparam_vividstrong_cmds;
-	struct dsi_panel_cmds dispparam_vividoff_cmds;
-	struct dsi_panel_cmds dispparam_smartweak_cmds;
-	struct dsi_panel_cmds dispparam_smartstrong_cmds;
-	struct dsi_panel_cmds dispparam_smartoff_cmds;
-	struct dsi_panel_cmds dispparam_level0_cmds;
-	struct dsi_panel_cmds dispparam_level1_cmds;
-	struct dsi_panel_cmds dispparam_level2_cmds;
-	struct dsi_panel_cmds dispparam_level3_cmds;
-	struct dsi_panel_cmds dispparam_level4_cmds;
-	struct dsi_panel_cmds dispparam_level5_cmds;
-	struct dsi_panel_cmds dispparam_level6_cmds;
-
-	struct dsi_panel_cmds dispparam_nightmode1_cmds;
-	struct dsi_panel_cmds dispparam_nightmode2_cmds;
-	struct dsi_panel_cmds dispparam_nightmode3_cmds;
-	struct dsi_panel_cmds dispparam_nightmode4_cmds;
-	struct dsi_panel_cmds dispparam_nightmode5_cmds;
-
-	struct dsi_panel_cmds dispparam_normal1_cmds;
-	struct dsi_panel_cmds dispparam_normal2_cmds;
-	struct dsi_panel_cmds dispparam_srgb_cmds;
-
-	struct dsi_panel_cmds dispparam_dimmingon_cmds;
-	struct delayed_work cmds_work;
-
+	struct dsi_panel_cmds cabc_on_cmds;
+	struct dsi_panel_cmds cabc_off_cmds;
+	struct dsi_panel_cmds ce_on_cmds;
+	struct dsi_panel_cmds ce_off_cmds;
+	struct dsi_panel_cmds srgb_on_cmds;
+	struct dsi_panel_cmds srgb_off_cmds;
+	struct dsi_panel_cmds cabc_movie_on_cmds;
+	struct dsi_panel_cmds cabc_movie_off_cmds;
+	struct dsi_panel_cmds cabc_still_on_cmds;
+	struct dsi_panel_cmds cabc_still_off_cmds;
+	//struct dsi_panel_cmds gamma_on_cmds;
+	//struct dsi_panel_cmds gamma_off_cmds;
+	struct dsi_panel_cmds idle_on_cmds; /* for lp mode */
+	struct dsi_panel_cmds idle_off_cmds;
 	u32 *status_valid_params;
 	u32 *status_cmds_rlen;
 	u32 *status_value;
@@ -574,13 +517,13 @@ struct mdss_dsi_ctrl_pdata {
 	struct completion video_comp;
 	struct completion dynamic_comp;
 	struct completion bta_comp;
+	struct completion te_irq_comp;
 	spinlock_t irq_lock;
 	spinlock_t mdp_lock;
 	int mdp_busy;
 	struct mutex mutex;
 	struct mutex cmd_mutex;
 	struct mutex cmdlist_mutex;
-	struct mutex dsi_ctrl_mutex;
 	struct regulator *lab; /* vreg handle */
 	struct regulator *ibb; /* vreg handle */
 	struct mutex clk_lane_mutex;
@@ -589,20 +532,9 @@ struct mdss_dsi_ctrl_pdata {
 	bool ulps;
 	bool core_power;
 	bool mmss_clamp;
-
-	/*
-	 * Data lane swap (logical to physical lane map):
-	 *     dlane_swap: used for DSI controller versions < 2.0, where
-	 *               dlane_swap is of type enum dsi_lane_map_type
-	 *     lane_map: used for DSI controller versions > 2.0, where
-	 *               lane_map[logical_lane_id] = physical_lane_id
-	 */
-	char dlane_swap;
-	uint8_t lane_map[DSI_LOGICAL_LANE_MAX];
-
+	char dlane_swap;	/* data lane swap */
 	bool is_phyreg_enabled;
 	bool burst_mode_enabled;
-	bool dsi_pipe_ready;
 
 	struct dsi_buf tx_buf;
 	struct dsi_buf rx_buf;
@@ -690,8 +622,8 @@ void disable_esd_thread(void);
 void mdss_dsi_irq_handler_config(struct mdss_dsi_ctrl_pdata *ctrl_pdata);
 
 void mdss_dsi_set_tx_power_mode(int mode, struct mdss_panel_data *pdata);
-u64 mdss_dsi_calc_bitclk(struct mdss_panel_info *panel_info, int frame_rate);
-u32 mdss_dsi_get_pclk_rate(struct mdss_panel_info *panel_info, u64 clk_rate);
+int mdss_dsi_clk_div_config(struct mdss_panel_info *panel_info,
+			    int frame_rate);
 int mdss_dsi_clk_refresh(struct mdss_panel_data *pdata, bool update_phy);
 int mdss_dsi_link_clk_init(struct platform_device *pdev,
 		      struct mdss_dsi_ctrl_pdata *ctrl_pdata);
@@ -759,29 +691,20 @@ int mdss_panel_get_dst_fmt(u32 bpp, char mipi_mode, u32 pixel_packing,
 
 int mdss_dsi_register_recovery_handler(struct mdss_dsi_ctrl_pdata *ctrl,
 		struct mdss_intf_recovery *recovery);
-#ifndef CONFIG_BACKLIGHT_QCOM_SPMI_WLED
 void mdss_dsi_unregister_bl_settings(struct mdss_dsi_ctrl_pdata *ctrl_pdata);
-#endif
 void mdss_dsi_panel_dsc_pps_send(struct mdss_dsi_ctrl_pdata *ctrl,
 				struct mdss_panel_info *pinfo);
 void mdss_dsi_dsc_config(struct mdss_dsi_ctrl_pdata *ctrl,
 	struct dsc_desc *dsc);
 void mdss_dsi_dfps_config_8996(struct mdss_dsi_ctrl_pdata *ctrl);
 void mdss_dsi_set_burst_mode(struct mdss_dsi_ctrl_pdata *ctrl);
-void mdss_dsi_cfg_lane_ctrl(struct mdss_dsi_ctrl_pdata *ctrl,
-	u32 bits, int set);
 void mdss_dsi_set_reg(struct mdss_dsi_ctrl_pdata *ctrl, int off,
 	u32 mask, u32 val);
 int mdss_dsi_phy_pll_reset_status(struct mdss_dsi_ctrl_pdata *ctrl);
-int mdss_dsi_check_panel_status(struct mdss_dsi_ctrl_pdata *ctrl, void *arg);
+int mdss_dsi_panel_power_ctrl(struct mdss_panel_data *pdata, int power_state);
 void mdss_dsi_ctrl_phy_reset(struct mdss_dsi_ctrl_pdata *ctrl);
 
 void mdss_dsi_debug_bus_init(struct mdss_dsi_data *sdata);
-int mdss_dsi_get_dt_vreg_data(struct device *dev,
-	struct device_node *of_node, struct mdss_module_power *mp,
-	enum dsi_pm_type module);
-void mdss_dsi_put_dt_vreg_data(struct device *dev,
-	struct mdss_module_power *module_power);
 
 static inline const char *__mdss_dsi_pm_name(enum dsi_pm_type module)
 {
@@ -986,6 +909,11 @@ static inline bool mdss_dsi_is_panel_on_lp(struct mdss_panel_data *pdata)
 	return mdss_panel_is_power_on_lp(pdata->panel_info.panel_power_state);
 }
 
+static inline bool mdss_dsi_is_panel_on_ulp(struct mdss_panel_data *pdata)
+{
+	return mdss_panel_is_power_on_ulp(pdata->panel_info.panel_power_state);
+}
+
 static inline bool mdss_dsi_ulps_feature_enabled(
 	struct mdss_panel_data *pdata)
 {
@@ -996,34 +924,6 @@ static inline bool mdss_dsi_cmp_panel_reg(struct dsi_buf status_buf,
 	u32 *status_val, int i)
 {
 	return status_buf.data[i] == status_val[i];
-}
-
-static inline enum dsi_logical_lane_id mdss_dsi_physical_to_logical_lane(
-		struct mdss_dsi_ctrl_pdata *ctrl, enum dsi_physical_lane_id id)
-{
-	int i;
-
-	for (i = DSI_LOGICAL_LANE_0; i < DSI_LOGICAL_LANE_MAX; i++)
-		if (ctrl->lane_map[i] == id)
-			break;
-
-	return i;
-}
-
-static inline enum dsi_physical_lane_id mdss_dsi_logical_to_physical_lane(
-		struct mdss_dsi_ctrl_pdata *ctrl, enum dsi_logical_lane_id id)
-{
-	int i;
-
-	if (id >= DSI_LOGICAL_LANE_MAX)
-		return DSI_PHYSICAL_LANE_INVALID;
-
-	for (i = DSI_LOGICAL_LANE_0; i < DSI_LOGICAL_LANE_MAX; i++) {
-		if (BIT(i) == ctrl->lane_map[id])
-			break;
-	}
-
-	return i;
 }
 
 #endif /* MDSS_DSI_H */
