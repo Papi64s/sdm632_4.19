@@ -1,10 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * linux/fs/jbd2/commit.c
  *
  * Written by Stephen C. Tweedie <sct@redhat.com>, 1998
  *
  * Copyright 1998 Red Hat corp --- All Rights Reserved
+ * Copyright (C) 2020 XiaoMi, Inc.
+ *
+ * This file is part of the Linux kernel and is made available under
+ * the terms of the GNU General Public License, version 2, or at your
+ * option, any later version, incorporated herein by reference.
  *
  * Journal commit routines for the generic filesystem journaling code;
  * part of the ext2fs journaling system.
@@ -121,7 +125,7 @@ static int journal_submit_commit_record(journal_t *journal,
 	struct commit_header *tmp;
 	struct buffer_head *bh;
 	int ret;
-	struct timespec64 now;
+	struct timespec64 now = current_kernel_time64();
 
 	*cbh = NULL;
 
@@ -134,7 +138,6 @@ static int journal_submit_commit_record(journal_t *journal,
 		return 1;
 
 	tmp = (struct commit_header *)bh->b_data;
-	ktime_get_coarse_real_ts64(&now);
 	tmp->h_commit_sec = cpu_to_be64(now.tv_sec);
 	tmp->h_commit_nsec = cpu_to_be32(now.tv_nsec);
 
@@ -153,10 +156,9 @@ static int journal_submit_commit_record(journal_t *journal,
 
 	if (journal->j_flags & JBD2_BARRIER &&
 	    !jbd2_has_feature_async_commit(journal))
-		ret = submit_bh(REQ_OP_WRITE,
-			REQ_SYNC | REQ_PREFLUSH | REQ_FUA, bh);
+		ret = submit_bh(REQ_OP_WRITE, WRITE_SYNC | WRITE_FLUSH_FUA, bh);
 	else
-		ret = submit_bh(REQ_OP_WRITE, REQ_SYNC, bh);
+		ret = submit_bh(REQ_OP_WRITE, WRITE_SYNC, bh);
 
 	*cbh = bh;
 	return ret;
@@ -269,11 +271,19 @@ static int journal_finish_inode_data_buffers(journal_t *journal,
 			continue;
 		jinode->i_flags |= JI_COMMIT_RUNNING;
 		spin_unlock(&journal->j_list_lock);
-		err = filemap_fdatawait_range_keep_errors(
-				jinode->i_vfs_inode->i_mapping, dirty_start,
+		err = filemap_fdatawait_range(jinode->i_vfs_inode->i_mapping, dirty_start,
 				dirty_end);
-		if (!ret)
-			ret = err;
+		if (err) {
+			/*
+			 * Because AS_EIO is cleared by
+			 * filemap_fdatawait_range(), set it again so
+			 * that user process can get -EIO from fsync().
+			 */
+			mapping_set_error(jinode->i_vfs_inode->i_mapping, -EIO);
+
+			if (!ret)
+				ret = err;
+		}
 		spin_lock(&journal->j_list_lock);
 		jinode->i_flags &= ~JI_COMMIT_RUNNING;
 		smp_mb();
@@ -287,8 +297,17 @@ static int journal_finish_inode_data_buffers(journal_t *journal,
 		if (jinode->i_next_transaction) {
 			jinode->i_transaction = jinode->i_next_transaction;
 			jinode->i_next_transaction = NULL;
+			jinode->i_dirty_start = jinode->i_next_dirty_start;
+			jinode->i_dirty_end = jinode->i_next_dirty_end;
+			jinode->i_next_dirty_start = 0;
+			jinode->i_next_dirty_end = 0;
 			list_add(&jinode->i_list,
 				&jinode->i_transaction->t_inode_list);
+			/* collect transaction inodes info */
+			if (jinode->i_flags & JI_WRITE_DATA)
+				atomic_inc(&jinode->i_transaction->t_write_inodes);
+			else
+				atomic_inc(&jinode->i_transaction->t_wait_inodes);
 		} else {
 			jinode->i_transaction = NULL;
 			jinode->i_dirty_start = 0;
@@ -382,6 +401,7 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	int csum_size = 0;
 	LIST_HEAD(io_bufs);
 	LIST_HEAD(log_bufs);
+	unsigned long commit_latency;
 
 	if (jbd2_journal_has_csum_v2or3(journal))
 		csum_size = sizeof(struct jbd2_journal_block_tail);
@@ -394,7 +414,7 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	/* Do we need to erase the effects of a prior jbd2_journal_flush? */
 	if (journal->j_flags & JBD2_FLUSHED) {
 		jbd_debug(3, "super block updated\n");
-		mutex_lock_io(&journal->j_checkpoint_mutex);
+		mutex_lock(&journal->j_checkpoint_mutex);
 		/*
 		 * We hold j_checkpoint_mutex so tail cannot change under us.
 		 * We don't need any special data guarantees for writing sb
@@ -404,7 +424,7 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 		jbd2_journal_update_sb_log_tail(journal,
 						journal->j_tail_sequence,
 						journal->j_tail,
-						REQ_SYNC);
+						WRITE_SYNC);
 		mutex_unlock(&journal->j_checkpoint_mutex);
 	} else {
 		jbd_debug(3, "superblock not updated\n");
@@ -721,7 +741,7 @@ start_journal_io:
 				clear_buffer_dirty(bh);
 				set_buffer_uptodate(bh);
 				bh->b_end_io = journal_end_buffer_io_sync;
-				submit_bh(REQ_OP_WRITE, REQ_SYNC, bh);
+				submit_bh(REQ_OP_WRITE, WRITE_SYNC, bh);
 			}
 			cond_resched();
 
@@ -765,6 +785,9 @@ start_journal_io:
 	J_ASSERT(commit_transaction->t_state == T_COMMIT);
 	commit_transaction->t_state = T_COMMIT_DFLUSH;
 	write_unlock(&journal->j_state_lock);
+	stats.run.rs_metadata_flushed = jiffies;
+	stats.run.rs_data_flushed = jbd2_time_diff(stats.run.rs_logging,
+					       stats.run.rs_metadata_flushed);
 
 	/* 
 	 * If the journal is not located on the file system device,
@@ -869,6 +892,9 @@ start_journal_io:
 	J_ASSERT(commit_transaction->t_state == T_COMMIT_DFLUSH);
 	commit_transaction->t_state = T_COMMIT_JFLUSH;
 	write_unlock(&journal->j_state_lock);
+	stats.run.rs_committing = jiffies;
+	stats.run.rs_metadata_flushed = jbd2_time_diff(stats.run.rs_metadata_flushed,
+					       stats.run.rs_committing);
 
 	if (!jbd2_has_feature_async_commit(journal)) {
 		err = journal_submit_commit_record(journal, commit_transaction,
@@ -906,6 +932,9 @@ start_journal_io:
 	J_ASSERT(commit_transaction->t_buffers == NULL);
 	J_ASSERT(commit_transaction->t_checkpoint_list == NULL);
 	J_ASSERT(commit_transaction->t_shadow_list == NULL);
+
+	stats.run.rs_committing = jbd2_time_diff(stats.run.rs_committing,
+					      jiffies);
 
 restart_loop:
 	/*
@@ -1110,12 +1139,46 @@ restart_loop:
 
 	write_unlock(&journal->j_state_lock);
 
+	stats.run.rs_callback = jiffies;
 	if (journal->j_commit_callback)
 		journal->j_commit_callback(journal, commit_transaction);
+	stats.run.rs_callback = jbd2_time_diff(stats.run.rs_callback,
+					      jiffies);
 
 	trace_jbd2_end_commit(journal, commit_transaction);
 	jbd_debug(1, "JBD2: commit %d complete, head %d\n",
 		  journal->j_commit_sequence, journal->j_tail_sequence);
+
+	/*
+	 * Print detailed transaction commit time consuming info if it was requested
+	 */
+	if (stats.ts_requested) {
+		commit_latency = jbd2_time_diff(commit_transaction->t_requested, jiffies);
+		/*
+		 * Only print when latency more than 1s
+		 */
+		if (jiffies_to_msecs(commit_latency) > 1000)
+			printk(KERN_WARNING
+				"jbd2_journal_commit_transaction: commit_tid %d, commit_latency %u, wait %u, request_delay %u, "
+				"running %u, locked %u, flushing %u, data_flush %u, metadata_flush %u, logging %u, committing %u, "
+				"callback %u, handle_count %u, blocks %u, blocks_logged %u, write_inodes %u, wait_inodes %u",
+				commit_transaction->t_tid,
+				jiffies_to_msecs(commit_latency),
+				jiffies_to_msecs(stats.run.rs_wait),
+				jiffies_to_msecs(stats.run.rs_request_delay),
+				jiffies_to_msecs(stats.run.rs_running),
+				jiffies_to_msecs(stats.run.rs_locked),
+				jiffies_to_msecs(stats.run.rs_flushing),
+				jiffies_to_msecs(stats.run.rs_data_flushed),
+				jiffies_to_msecs(stats.run.rs_metadata_flushed),
+				jiffies_to_msecs(stats.run.rs_logging),
+				jiffies_to_msecs(stats.run.rs_committing),
+				jiffies_to_msecs(stats.run.rs_callback),
+				stats.run.rs_handle_count, stats.run.rs_blocks,
+				stats.run.rs_blocks_logged,
+				atomic_read(&commit_transaction->t_write_inodes),
+				atomic_read(&commit_transaction->t_wait_inodes));
+	}
 
 	write_lock(&journal->j_state_lock);
 	spin_lock(&journal->j_list_lock);
