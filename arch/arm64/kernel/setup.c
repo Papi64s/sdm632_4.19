@@ -3,7 +3,6 @@
  *
  * Copyright (C) 1995-2001 Russell King
  * Copyright (C) 2012 ARM Ltd.
- * Copyright (C) 2017 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -24,6 +23,7 @@
 #include <linux/stddef.h>
 #include <linux/ioport.h>
 #include <linux/delay.h>
+#include <linux/utsname.h>
 #include <linux/initrd.h>
 #include <linux/console.h>
 #include <linux/cache.h>
@@ -31,6 +31,7 @@
 #include <linux/screen_info.h>
 #include <linux/init.h>
 #include <linux/kexec.h>
+#include <linux/crash_dump.h>
 #include <linux/root_dev.h>
 #include <linux/cpu.h>
 #include <linux/interrupt.h>
@@ -41,14 +42,14 @@
 #include <linux/of_fdt.h>
 #include <linux/efi.h>
 #include <linux/psci.h>
-#include <linux/sched/task.h>
+#include <linux/dma-mapping.h>
+#include <linux/platform_device.h>
 #include <linux/mm.h>
 
 #include <asm/acpi.h>
 #include <asm/fixmap.h>
 #include <asm/cpu.h>
 #include <asm/cputype.h>
-#include <asm/daifflags.h>
 #include <asm/elf.h>
 #include <asm/cpufeature.h>
 #include <asm/cpu_ops.h>
@@ -64,25 +65,29 @@
 #include <asm/efi.h>
 #include <asm/xen/hypervisor.h>
 #include <asm/mmu_context.h>
-
-static int num_standard_resources;
-static struct resource *standard_resources;
-
+#include <asm/system_misc.h>
 #ifdef CONFIG_BOOT_INFO
 #include <asm/bootinfo.h>
-#include <linux/hwinfo.h>
 #endif
 
 phys_addr_t __fdt_pointer __initdata;
 
-/* Vendor stub */
+#ifdef CONFIG_BOOT_INFO
+void __init early_init_dt_setup_pureason_arch(unsigned long pu_reason)
+{
+	set_powerup_reason(pu_reason);
+	pr_info("Powerup reason=0x%x\n", get_powerup_reason());
+}
+#endif
+
+
 unsigned int boot_reason;
-EXPORT_SYMBOL_GPL(boot_reason);
+EXPORT_SYMBOL(boot_reason);
 
-/* Vendor stub */
 unsigned int cold_boot;
-EXPORT_SYMBOL_GPL(cold_boot);
+EXPORT_SYMBOL(cold_boot);
 
+const char *machine_name;
 /*
  * Standard memory resources
  */
@@ -109,20 +114,6 @@ static struct resource mem_res[] = {
  */
 u64 __cacheline_aligned boot_args[4];
 
-#if defined(CONFIG_OF_FLATTREE) && defined(CONFIG_BOOT_INFO)
-void __init early_init_dt_setup_pureason_arch(unsigned long pu_reason)
-{
-	set_powerup_reason(pu_reason);
-	pr_info("Powerup reason=0x%x\n", get_powerup_reason());
-}
-
-void __init early_init_dt_setup_hwversion_arch(unsigned long hw_version)
-{
-	set_hw_version(hw_version);
-	pr_info("Hw version=0x%x\n", get_hw_version());
-}
-#endif
-
 void __init smp_setup_processor_id(void)
 {
 	u64 mpidr = read_cpuid_mpidr() & MPIDR_HWID_BITMASK;
@@ -134,8 +125,7 @@ void __init smp_setup_processor_id(void)
 	 * access percpu variable inside lock_release
 	 */
 	set_my_cpu_offset(0);
-	pr_info("Booting Linux on physical CPU 0x%010lx [0x%08x]\n",
-		(unsigned long)mpidr, read_cpuid_id());
+	pr_info("Booting Linux on physical CPU 0x%lx\n", (unsigned long)mpidr);
 }
 
 bool arch_match_cpu_phys_id(int cpu, u64 phys_id)
@@ -209,14 +199,14 @@ static void __init smp_build_mpidr_hash(void)
 		pr_warn("Large number of MPIDR hash buckets detected\n");
 }
 
+const char * __init __weak arch_read_machine_name(void)
+{
+	return of_flat_dt_get_machine_name();
+}
+
 static void __init setup_machine_fdt(phys_addr_t dt_phys)
 {
-	int size;
-	void *dt_virt = fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL);
-	const char *name;
-
-	if (dt_virt)
-		memblock_reserve(dt_phys, size);
+	void *dt_virt = fixmap_remap_fdt(dt_phys);
 
 	if (!dt_virt || !early_init_dt_scan(dt_virt)) {
 		pr_crit("\n"
@@ -229,37 +219,28 @@ static void __init setup_machine_fdt(phys_addr_t dt_phys)
 			cpu_relax();
 	}
 
-	/* Early fixups are done, map the FDT as read-only now */
-	fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL_RO);
-
-	name = of_flat_dt_get_machine_name();
-	if (!name)
-		return;
-
-	pr_info("Machine model: %s\n", name);
-	dump_stack_set_arch_desc("%s (DT)", name);
+	machine_name = arch_read_machine_name();
+	if (machine_name) {
+		dump_stack_set_arch_desc("%s (DT)", machine_name);
+		pr_info("Machine: %s\n", machine_name);
+	}
 }
 
 static void __init request_standard_resources(void)
 {
 	struct memblock_region *region;
 	struct resource *res;
-	unsigned long i = 0;
 
 	kernel_code.start   = __pa_symbol(_text);
 	kernel_code.end     = __pa_symbol(__init_begin - 1);
 	kernel_data.start   = __pa_symbol(_sdata);
 	kernel_data.end     = __pa_symbol(_end - 1);
 
-	num_standard_resources = memblock.memory.cnt;
-	standard_resources = alloc_bootmem_low(num_standard_resources *
-					       sizeof(*standard_resources));
-
 	for_each_memblock(memory, region) {
-		res = &standard_resources[i++];
+		res = alloc_bootmem_low(sizeof(*res));
 		if (memblock_is_nomap(region)) {
 			res->name  = "reserved";
-			res->flags = IORESOURCE_MEM;
+			res->flags = IORESOURCE_MEM | IORESOURCE_BUSY;
 		} else {
 			res->name  = "System RAM";
 			res->flags = IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY;
@@ -275,75 +256,8 @@ static void __init request_standard_resources(void)
 		if (kernel_data.start >= res->start &&
 		    kernel_data.end <= res->end)
 			request_resource(res, &kernel_data);
-#ifdef CONFIG_KEXEC_CORE
-		/* Userspace will find "Crash kernel" region in /proc/iomem. */
-		if (crashk_res.end && crashk_res.start >= res->start &&
-		    crashk_res.end <= res->end)
-			request_resource(res, &crashk_res);
-#endif
 	}
 }
-
-static int __init reserve_memblock_reserved_regions(void)
-{
-	u64 i, j;
-
-	for (i = 0; i < num_standard_resources; ++i) {
-		struct resource *mem = &standard_resources[i];
-		phys_addr_t r_start, r_end, mem_size = resource_size(mem);
-
-		if (!memblock_is_region_reserved(mem->start, mem_size))
-			continue;
-
-		for_each_reserved_mem_region(j, &r_start, &r_end) {
-			resource_size_t start, end;
-
-			start = max(PFN_PHYS(PFN_DOWN(r_start)), mem->start);
-			end = min(PFN_PHYS(PFN_UP(r_end)) - 1, mem->end);
-
-			if (start > mem->end || end < mem->start)
-				continue;
-
-			reserve_region_with_split(mem, start, end, "reserved");
-		}
-	}
-
-	return 0;
-}
-arch_initcall(reserve_memblock_reserved_regions);
-
-#ifdef CONFIG_BOOT_INFO
-void __init early_init_dt_setup_smeminfo_arch(unsigned long smem_info)
-{
-	unsigned int ddr_info;
-
-	switch (smem_info) {
-	case 0x01:
-		ddr_info = 0x01;
-		break;
-	case 0x03:
-		ddr_info = 0x03;
-		break;
-	case 0x06:
-		ddr_info = 0x02;
-		break;
-	case 0xff:
-		ddr_info = 0x04;
-		break;
-	case 0x05:
-		ddr_info = 0x05;
-		break;
-	case 0x0e:
-		ddr_info = 0x06;
-		break;
-	default:
-		ddr_info = 0x00;
-		break;
-	}
-	update_hardware_info(TYPE_DDR, ddr_info);
-	pr_info("Smem info=0x%x\n", ddr_info);
-}
-#endif
 
 u64 __cpu_logical_map[NR_CPUS] = { [0 ... NR_CPUS-1] = INVALID_HWID };
 
@@ -351,6 +265,9 @@ void __init __weak init_random_pool(void) { }
 
 void __init setup_arch(char **cmdline_p)
 {
+	pr_info("Boot CPU: AArch64 Processor [%08x]\n", read_cpuid_id());
+
+	sprintf(init_utsname()->machine, UTS_MACHINE);
 	init_mm.start_code = (unsigned long) _text;
 	init_mm.end_code   = (unsigned long) _etext;
 	init_mm.end_data   = (unsigned long) _edata;
@@ -363,19 +280,13 @@ void __init setup_arch(char **cmdline_p)
 
 	setup_machine_fdt(__fdt_pointer);
 
-	/*
-	 * Initialise the static keys early as they may be enabled by the
-	 * cpufeature code and early parameters.
-	 */
-	jump_label_init();
 	parse_early_param();
 
 	/*
-	 * Unmask asynchronous aborts and fiq after bringing up possible
-	 * earlycon. (Report possible System Errors once we can report this
-	 * occurred).
+	 *  Unmask asynchronous aborts after bringing up possible earlycon.
+	 * (Report possible System Errors once we can report this occurred)
 	 */
-	local_daif_restore(DAIF_PROCCTX_NOIRQ);
+	local_async_enable();
 
 	/*
 	 * TTBR0 is only used for the identity mapping at this stage. Make it
@@ -413,9 +324,6 @@ void __init setup_arch(char **cmdline_p)
 	cpu_read_bootcpu_ops();
 	smp_init_cpus();
 	smp_build_mpidr_hash();
-
-	/* Init percpu seeds for random tags after cpus are set up. */
-	kasan_init_tags();
 
 #ifdef CONFIG_ARM64_SW_TTBR0_PAN
 	/*
@@ -488,3 +396,9 @@ static int __init register_kernel_offset_dumper(void)
 	return 0;
 }
 __initcall(register_kernel_offset_dumper);
+
+void arch_setup_pdev_archdata(struct platform_device *pdev)
+{
+	pdev->archdata.dma_mask = DMA_BIT_MASK(32);
+	pdev->dev.dma_mask = &pdev->archdata.dma_mask;
+}
